@@ -1,0 +1,158 @@
+import win32api, win32con, win32gui
+import customtkinter as ctk
+import numpy as np
+import ultralytics
+import threading
+import math
+import time
+import cv2
+import mss
+import keyboard
+import winsound
+import tkinter as tk
+import os
+import ssl
+
+ssl._create_default_https_context = ssl._create_unverified_context
+
+
+class Config:
+    def __init__(self):
+        self.width = win32api.GetSystemMetrics(0)
+        self.height = win32api.GetSystemMetrics(1)
+        self.center_x = self.width // 2
+        self.center_y = self.height // 2
+        self.Running = True
+        self.MenuVisible = True
+        self.AimToggle = False
+        self.TriggerToggle = False
+        self.FollowMouse = True
+        self.radius = 80
+        self.smooth = 0.20
+        self.trigger_delay = 0.07
+        self.target_offset = 0.1
+        self.purple = "#A020F0"
+        self.bg = "#121212"
+
+
+cfg = Config()
+
+
+class HomohackV7(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.geometry("280x480")
+        self.title("homohack v7")
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(fg_color=cfg.bg)
+
+        self.bind("<ButtonPress-1>", self.start_drag)
+        self.bind("<B1-Motion>", self.do_drag)
+
+        self.setup_ui()
+        # Overlay'i ana döngü başlamadan hemen önce burada oluşturuyoruz
+        self.create_overlay()
+        self.check_keys()
+
+    def start_drag(self, event):
+        self.x, self.y = event.x, event.y
+
+    def do_drag(self, event):
+        self.geometry(f"+{self.winfo_x() + (event.x - self.x)}+{self.winfo_y() + (event.y - self.y)}")
+
+    def setup_ui(self):
+        ctk.CTkLabel(self, text="HOMOHACK V7", font=("Consolas", 18, "bold"), text_color=cfg.purple).pack(pady=10)
+        box = ctk.CTkFrame(self, fg_color="#1E1E1E", corner_radius=10)
+        box.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.sw_aim = ctk.CTkSwitch(box, text="AIMBOT", command=self.sync, progress_color=cfg.purple)
+        self.sw_aim.pack(pady=8)
+        self.sw_trigger = ctk.CTkSwitch(box, text="TRIGGER", command=self.sync, progress_color=cfg.purple)
+        self.sw_trigger.pack(pady=8)
+        self.sw_follow = ctk.CTkSwitch(box, text="FOLLOW MOUSE", command=self.sync, progress_color=cfg.purple)
+        self.sw_follow.select()
+        self.sw_follow.pack(pady=8)
+
+        self.add_slider(box, "FOV SIZE", 30, 300, cfg.radius, "radius")
+        self.add_slider(box, "SMOOTH", 0.05, 1.0, cfg.smooth, "smooth")
+        self.add_slider(box, "TRIGGER DELAY", 0.01, 1.0, cfg.trigger_delay, "trigger_delay")
+
+    def add_slider(self, parent, label, f, t, start, attr):
+        ctk.CTkLabel(parent, text=label, font=("Consolas", 10)).pack()
+        s = ctk.CTkSlider(parent, from_=f, to=t, button_color=cfg.purple,
+                          command=lambda v: setattr(cfg, attr, float(v)))
+        s.set(start)
+        s.pack(fill="x", padx=20, pady=5)
+
+    def sync(self):
+        cfg.AimToggle = self.sw_aim.get()
+        cfg.TriggerToggle = self.sw_trigger.get()
+        cfg.FollowMouse = self.sw_follow.get()
+
+    def create_overlay(self):
+        self.overlay_win = tk.Toplevel(self)
+        self.overlay_win.overrideredirect(True)
+        self.overlay_win.attributes("-topmost", True, "-transparentcolor", "black")
+        self.overlay_win.config(bg="black")
+        self.overlay_win.geometry(f"{cfg.width}x{cfg.height}+0+0")
+        self.canvas = tk.Canvas(self.overlay_win, bg="black", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.update_overlay()
+
+    def update_overlay(self):
+        if cfg.Running:
+            self.canvas.delete("all")
+            r = cfg.radius
+            mx, my = win32api.GetCursorPos()
+            cx, cy = (mx, my) if cfg.FollowMouse else (cfg.center_x, cfg.center_y)
+            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=cfg.purple, width=1.5)
+            # Kendi kendini 10ms sonra tekrar çağıran döngü (Thread yerine daha güvenli)
+            self.overlay_win.after(10, self.update_overlay)
+
+    def check_keys(self):
+        if keyboard.is_pressed("insert"):
+            cfg.MenuVisible = not cfg.MenuVisible
+            self.attributes("-alpha", 1.0 if cfg.MenuVisible else 0.0)
+            time.sleep(0.2)
+        self.after(100, self.check_keys)
+
+
+def main_engine():
+    try:
+        model = ultralytics.YOLO("yolov8n.pt")
+    except:
+        return
+    sct = mss.mss()
+    while cfg.Running:
+        if not (cfg.AimToggle or cfg.TriggerToggle):
+            time.sleep(0.1);
+            continue
+        mx, my = win32api.GetCursorPos()
+        rx, ry = (mx, my) if cfg.FollowMouse else (cfg.center_x, cfg.center_y)
+        region = {"top": int(ry - 150), "left": int(rx - 150), "width": 300, "height": 300}
+        img = np.array(sct.grab(region))
+        results = model.predict(source=cv2.cvtColor(img, cv2.COLOR_BGRA2BGR), conf=0.45, classes=[0], verbose=False)
+        boxes = results[0].boxes.xyxy
+        if len(boxes) > 0:
+            x1, y1, x2, y2 = boxes[0].tolist()
+            tx, ty = (x1 + x2) / 2, y1 + (y2 - y1) * cfg.target_offset
+            moveX, moveY = tx - 150, ty - 150
+            dist = math.sqrt(moveX ** 2 + moveY ** 2)
+            if cfg.AimToggle and dist < cfg.radius:
+                win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, int(moveX * cfg.smooth), int(moveY * cfg.smooth), 0, 0)
+            if cfg.TriggerToggle:
+                if abs(moveX) <= (x2 - x1) / 2 and abs(moveY) <= (y2 - y1) / 2:
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.02)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    time.sleep(cfg.trigger_delay)
+        time.sleep(0.001)
+
+
+if __name__ == "__main__":
+    # Sadece AI motorunu thread ile başlatıyoruz
+    threading.Thread(target=main_engine, daemon=True).start()
+    # Arayüz ve Overlay ana thread üzerinden yürüyor
+    app = HomohackV7()
+    app.mainloop()
